@@ -225,7 +225,7 @@ headers = {
 }
 
 data = "<speak>하이</speak>"
-res = requests.post(url, headers=headers, data=data)
+res = requests.post(url, headers=headers, data=data.encdoe('utf-8'))
 f= open('temp.wav', 'wb')
 f.write(res.content)
 f.close()
@@ -319,6 +319,8 @@ if __name__ == "__main__":
 
 이 코드를 기반으로 이제 개발을 진행할 것이다.
 
+*참고자료 : [점프 투 플라스크 위키독스 문서](https://wikidocs.net/book/4542), [Flask Requests 설명 블로그](https://dgkim5360.tistory.com/entry/python-requests)*
+
 ---
 
 ## 기획
@@ -345,22 +347,513 @@ if __name__ == "__main__":
 
 우선 메인 컨텐츠는 "뉴스" 이기 때문에 평소 뉴스를 보는 기준에 대해서 생각을 해보았다.
 
-대부분의 경우 네이버의 실시간 검색어를 통해 많은 사람들이 뉴스를 접하는 경향이 있다. 따라서 뉴스 선정 기준을 "실시간 검색어"로 잡으려고 했지만 2021년 2월 25일 네이버에서 더이상 실시간 검색어 기능을 제공하지 않는다. 따라서 이에 대한 대안으로 많은 사람들은 Google 트렌드를 이용하고 있었다.
-
-[Google 트렌드](https://trends.google.co.kr/trends/trendingsearches/daily?geo=KR)
+대부분의 경우 네이버의 실시간 검색어를 통해 많은 사람들이 뉴스를 접하는 경향이 있다. 따라서 뉴스 선정 기준을 "실시간 검색어"로 잡으려고 했지만 2021년 2월 25일 네이버에서 더이상 실시간 검색어 기능을 제공하지 않는다. 따라서 이에 대한 [대안](https://coconuts.tistory.com/465)으로 많은 사람들은 Google 트렌드를 이용하고 있었다.
 
 나는 실제로 이번 프로젝트를 진행하면서 알게되었지만 꽤 괜찮게 구성된 것 같았다. 한가지 아쉬운 점은 일별 검색어 트렌드는 지원하는데 대한민국에서는 실시간 검색어 기능을 지원하지 않았다. 일별 검색어 트렌드로도 충분하다고 판단하여 Google 트렌드를 활용하여 현재 화두가 되고있는 키워드를 뽑아낼 것이다.
 
-### Career Goals
+[Google 트렌드](https://trends.google.co.kr/trends/trendingsearches/daily?geo=KR)
 
-What direction do you see your career going in the next few years? If you’re not sure of where you’d like to take your career, what are some career paths or target roles that interest you or that you want to explore?
+뽑아낸 키워드들로 이제 위에서 언급한 [네이버 뉴스 API](https://developers.naver.com/docs/search/news/)를 활용해서 뉴스들을 받아올 것이다.
 
-- 
+받아온 뉴스를 이제 해당 오디오북안에 파싱시켜 주고 각각의 뉴스들은 3줄 요약해서 첫 표지에서 썸네일 형식으로 보여 줄 것이다. 파싱된 정보들은 KAKAO Speech API를 통해 오디오북 형식으로 제작할 것이다.
 
-What types of work do you want to learn more about or seem intriguing?
+정리하면
 
-- 
+1. 구글 트렌드를 통한 키워드 분석
+2. 네이버 뉴스 API를 통해 분석한 키워드에 해당하는 뉴스 불러오기
+3. 받아온 뉴스 정보를 CLOVA Summary를 통한 세줄 요약
+4. 세 줄 요약된 정보들은 오디오북 표지에 썸네일 형식으로 파싱
+5. 세 줄 요약된 정보들은 한꺼번에 읽어주는 오디오를 표지에 배치
+6. 뉴스 전체 내용은 오디오북 안쪽에 배치
+7. 각각의 기사마다 해당 기사를 읽어주는 오디오 배치
+
+각각의 단계별로 개발을 진행하도록 하겠다.
 
 ---
 
-# What to focus on: Strengths and areas to improve
+## Google Trend
+
+[Google 트렌드](https://trends.google.co.kr/trends/trendingsearches/daily?geo=KR)
+
+구글 트렌드에서 일별 인기 급상승 검색어를 추출 해야하는데 사용하기 쉬운 방법이 2가지가 있었다.
+
+- [Python의 Pytrend 이용하기](https://98yejin.github.io/2020-11-02-google-trends/)
+- [Node.js를 통한 RSS 파싱](https://brunch.co.kr/@joypinkgom/90)
+
+이번 프로젝트의 대부분이 Python으로 진행되고 있지만 구글 트렌드에서는 RSS를 제공해주고 있었고 Node.js를 통한 API를 구축해본 경험이 없어서 Python의 라이브러리를 활용해서 간단하게 해결하는 것보다는 이번 기회를 통해 Node.js를 통한 간단한 API도 구축해보고 싶었다.
+
+내가 찾은 자료에는 RSS Parser 라는 라이브러리를 활용하여 개발을 진행하였다.
+
+### 설치
+
+```bash
+npm i --save lodash
+npm install express --save
+npm install q
+npm install --save rss-parser
+npm install moment-timezone
+```
+
+### 메인 코드 - google_trends_service.js
+
+```jsx
+'use strict';
+
+const _ = require('lodash');
+const Q = require('q');
+
+const Parser = require('rss-parser');
+const parser = new Parser({
+    customFields: {
+        item: ['ht:approx_traffic', 'ht:picture', 'ht:news_item']
+    }
+});
+
+const moment = require('moment-timezone');
+moment.locale('ko');
+const TIMEZONE = "Asia/Seoul";
+const DATE_FORMAT = "YYYY-MM-DD";
+
+class GoogleTrendsService {
+
+    constructor(options) {
+        this._options = options || {};
+        this.rss = 'https://trends.google.com/trends/trendingsearches/daily/rss?geo=KR';
+    }
+
+    getDailySearchTrends() {
+        var deferred = Q.defer();
+
+        parser.parseURL(this.rss)
+            .then(feed => {
+                let googleTrendsData = {
+                    'items': []
+                };
+
+                feed.items.forEach(item => {
+                    let today = moment().tz(TIMEZONE).format(DATE_FORMAT);
+                    let trendsDate = moment(item.isoDate).tz(TIMEZONE).format(DATE_FORMAT);
+
+                    if (today == trendsDate) {
+                        googleTrendsData.items.push({
+                            'title': item.title,
+                            'count': item['ht:approx_traffic'],
+                            'pubDate': item.pubDate,
+                            'pubDateKor': moment(item.isoDate).tz(TIMEZONE).format("LLLL"),
+                            'isoDate': item.isoDate,
+                            'picture': item['ht:picture'],
+                            'newsItemTitle': _.unescape(item["ht:news_item"]["ht:news_item_title"][0]),
+                            'newsItemSnippet': _.unescape(item["ht:news_item"]["ht:news_item_snippet"][0]),
+                            'newsItemUrl': item["ht:news_item"]["ht:news_item_url"][0],
+                            'newsItemSource': _.unescape(item["ht:news_item"]["ht:news_item_source"][0])
+                        });
+                    }
+                });
+
+                deferred.resolve(googleTrendsData);
+            }).catch(err => {
+                deferred.reject(err);
+            });
+
+        return deferred.promise;
+    }
+}
+
+module.exports = new GoogleTrendsService();
+```
+
+### API로 만들기 - api.js
+
+```jsx
+var express = require('express');
+const trendsService = require('./google_trends_service');
+
+var app = express();
+ 
+app.get('/trend', function (req, res) {
+    trendsService.getDailySearchTrends()
+        .then(trendsList => {
+            res.json(JSON.stringify(trendsList, null, 2));
+        })
+        .catch(err => console.err);
+    ;
+})
+ 
+app.listen(3001, function(){
+    console.log("Express server has started on port 3001")
+})
+```
+
+파일 구조는 api.js 와 google_trends_service.js가 같은 경로에 있어야한다.
+
+실행방법은 node api.js
+
+---
+
+## FLASK API
+
+총 3가지 API를 Flask를 통해 구현할 것이다.
+
+필요한 라이브러리는
+
+```python
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+from flask import Flask, request, Response
+from bs4 import BeautifulSoup
+import urllib.request
+import requests
+import json
+import time
+```
+
+으로 필요한 라이브러리를 pip install을 통해 설치하면 된다.
+
+### 네이버 뉴스 링크 가져오기
+
+```python
+@app.route('/NaverNewsLink', methods = ['POST'])
+
+def getNews():
+    params = request.get_json()["keyword"]      #post로 전달받은 데이터를 json으로 파싱 {"keyword": "코로나"}으로 보냄
+    
+    client_id = "YOUR-ID"                       #네이버 개발자 사이트에 있는 ClientID를 입력하면 된다.
+    client_secret = "YOUR-SECRET"               #네이버 개발자 사이트에 있는 Secret을 입력하면 된다.
+ 
+    encText = urllib.parse.quote(params) # 검색할 키워드
+
+    url = "https://openapi.naver.com/v1/search/news?query=" + encText + "&display=3&sort=sim"#display는 표시할 뉴스 개수,sort는 정렬 방법이다. 자세한건 네이버뉴스API 문서에 작성되어있다.
+
+    requestURL = urllib.request.Request(url)
+    requestURL.add_header("X-Naver-Client-Id", client_id)
+    requestURL.add_header("X-Naver-Client-Secret", client_secret)
+    response = urllib.request.urlopen(requestURL)
+    rescode = response.getcode()
+    if(rescode == 200):
+        news_links = []
+        response_body = response.read().decode('utf-8')     #type이 string이다
+        #return response_body
+        items = json.loads(response_body)["items"]          #json으로 불러와 item을 불러온다
+        for item in items:
+            link = item['link']
+            if 'news.naver.com' in link:
+                print(link)
+                news_links.append(link)
+        return {"link":news_links}
+    else:
+        return("Error Code:" + rescode)
+```
+
+POST 방식의 API로 입력받는 데이터의 형식은 `{"keyword": "코로나"}` 형식으로 데이터를 넣어주면 되고
+
+Return되는 값은 키워드로 검색한 뉴스 중 네이버 뉴스(news.naver.com)으로 이루어진 링크만을 추출하여
+
+```json
+{
+  "link": [
+    "https://news.naver.com/main/read.naver?mode=LSD&mid=sec&sid1=102&oid=015&aid=0004604028",
+    "https://news.naver.com/main/read.naver?mode=LSD&mid=sec&sid1=101&oid=056&aid=0011119205",
+    "https://news.naver.com/main/read.naver?mode=LSD&mid=sec&sid1=102&oid=032&aid=0003097871"
+  ]
+}
+```
+
+와 같은 형식으로 Return한다. 네이버 뉴스로 추출하는 이유는 본문 내용은 직접 크롤링 해야하는데 형식이 정형화 되어있어야 용이하기 때문이다.
+
+### 네이버 뉴스 본문 가져오기
+
+```python
+@app.route('/NaverNewsDetail', methods = ['POST'])
+
+def getNewsDetail():
+    params = request.get_json()["link"]      #post로 전달받은 데이터를 json으로 파싱 {"keyword": "코로나"}으로 보냄
+    headers = {'User-Agent':'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36'}
+    res = requests.get(params,headers=headers)
+    if res.status_code == 200:
+        news_data = []
+        try:
+            if 'sports' in params:                                                                                #스포츠 기사인 경우
+                soup = BeautifulSoup(res.text,"html.parser")
+                title = soup.select_one('h4.title').text.strip()
+                input_date = soup.select_one('div.info').text.strip().replace('\n',' ')
+                article = soup.select_one('div#newsEndContents').text.strip().replace('\n','')
+                # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+                article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+                data = {"title":title, "input_date":input_date, "article":article}
+            else:                                                                                                 #일반 기사인 경우
+                soup = BeautifulSoup(res.text,"html.parser")
+                title = soup.select_one('h3#articleTitle').text.strip()
+                input_date = soup.select_one('span.t11').text.strip()
+                article = soup.select_one('div#articleBodyContents').text.strip()
+                # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+                article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+                data = {"title":title, "input_date":input_date, "article":article}
+            news_data.append(data)
+        except:                                                                                                   #연예 기사인 경우
+            soup = BeautifulSoup(res.text,"html.parser")
+            title = soup.select_one('h2.end_tit').text.strip()
+            input_date = soup.select_one('span.author').text.strip().replace('\n',' ')
+            article = soup.select_one('div#articeBody').text.strip().replace('\n','')
+            # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+            article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+            data = {"title":title, "input_date":input_date, "article":article}
+            news_data.append(data)
+    else:
+        return("Error Code:" + res.status_code)
+    return {"detail" : news_data}
+```
+
+POST 방식의 API로 입력받는 데이터의 형식은 `{"link":"https://news.naver.com/~~~~~~"}` 형식으로 데이터를 넣어주면 되고 이때 스포츠 뉴스는 `https://sports.news.naver.com/~~~~~~`시작되고 
+
+연예 뉴스 같은 경우는 형식이 같지만 막상 링크를 통해 접속하면 `https://entertain.news.naver.com/~~`  으로 연결되는 것을 확인했다
+
+정리하면 일반뉴스, 스포츠 뉴스, 연예 뉴스 3가지 모두 다른 형식으로 이루어져 있음을 파악했고 이것에 대해 각각에 해당하는 코드로 크롤링을 진행하였다.
+
+또한 크롤링을 진행할때 headers에 해당하는 내용이 포함되지 않아 크롤링이 진행되지 않는 이슈가 발생했었는데 그에 대한 설명을 열심히 공부해서 headers에 추가하여 해결했다.  아래는 그에 대한 내용이다.
+
+[안티 크롤링](%E1%84%82%E1%85%A6%E1%84%8B%E1%85%B5%E1%84%87%E1%85%A5%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A1%E1%84%8B%E1%85%AE%E1%84%83%E1%85%B3%E1%84%8B%E1%85%AA%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A9%E1%84%87%E1%85%A1%E1%84%85%E1%85%B3%E1%86%AF%20%E1%84%92%E1%85%AA%E1%86%AF%E1%84%8B%E1%85%AD%E1%86%BC%E1%84%92%E1%85%A1%E1%86%AB%20%E1%84%8B%E1%85%B5%E1%86%AB%E1%84%80%E1%85%A9%E1%86%BC%E1%84%8C%E1%85%B5%E1%84%82%E1%85%B3%203e33b8211674448fb4070063bbfc3fa9/%E1%84%8B%E1%85%A1%E1%86%AB%E1%84%90%E1%85%B5%20%E1%84%8F%E1%85%B3%E1%84%85%E1%85%A9%E1%86%AF%E1%84%85%E1%85%B5%E1%86%BC%2091e658e7332748fca047583efd9753b1.md)
+
+*[참고자료](https://ysyblog.tistory.com/49)*
+
+### 결과
+
+```json
+{
+  "detail": [
+    {
+      "article": "아이린. JTBC 예능 프로그램 ‘아는 형님’     모델 아이린(본명 김혜진)이 모델 정혁에게 고백했다고 털어놨다.    아이린은 지난 11일 방송된 JTBC 예능 프로그램 ‘아는 형님’에 출연해 재치 있는 입담을 드러냈다.    이날 씨름선수 출신 방송인 강호동은 “이걸 방송에서 얘기해도 되나?”라며 아이린과 정혁을 바라봤다.    이에 다른 출연진들은 “둘이 사귀었어?”라며 물었다.    그러자 강호동은 “심장박동수 테스트를 했는데 예능 하면서 그런 걸 처음 봤다”고 설명했다.   정혁의 인사에 아이린의 심장박동수가 높아졌던 것.   이를 들은 아이린은 “더워서 그랬어”라고 해명했다.   그러나 “둘이 뭐가 있었냐”는 출연진의 질문이 이어졌다.   결국 아이린은 “고백했는데 내가 차였다”고 실토했다.    이에 정혁은 “누나, 그렇게 말하면 내가 쓰레기가 되잖아요”라며 반응했다.   아이린은 “장난이다. 아무 일도 없었다”고 덧붙였다.",
+      "input_date": "기사입력2021.09.12. 오전 11:36",
+      "title": "아이린 \"정혁에게 고백했는데 차였다\""
+    }
+  ]
+}
+```
+
+위와 같은 형식으로 결과를 Return한다. 기사 제목, 작성 날짜, 기사 내용 이라는 정보를 담아 저장한다.
+
+### Firebase
+
+[파이어베이스](https://firebase.google.com/)는 2011년 파이어베이스사가 개발하고 2014년 구글에 인수된 모바일 및 웹 애플리케이션 개발 플랫폼이다.
+
+이번 프로젝트에서 Firebase를 사용하게 된 계기는 DB 때문이다. 사실 다루는 데이터의 양이 이렇게 방대할 줄을 몰라서 Flask를 사용해서만 데이터들을 처리하려고 했는데 데이터들이 씹히는 이슈가 발생했다.
+
+따라서 데이터를 저장할 곳이 필요했고, 평소에 웹, 앱 개발할 때 백엔드 역할을 하던 Firebase가 떠올라서 관련 [자료](https://firebase.google.com/docs/firestore/manage-data/add-data?authuser=1#python)를 찾아봤고 Python으로도 Firebase의 Cloud Firestore(DB 역할)을 제어할 수 있다는 것을 알았다.
+
+[Get started with Cloud Firestore | Firebase Documentation](https://firebase.google.com/docs/firestore/quickstart?authuser=1)
+
+이곳에 하는 과정이 전부 나와있었고 가장 헷갈렸던 부분은 
+
+![Untitled](%E1%84%82%E1%85%A6%E1%84%8B%E1%85%B5%E1%84%87%E1%85%A5%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A1%E1%84%8B%E1%85%AE%E1%84%83%E1%85%B3%E1%84%8B%E1%85%AA%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A9%E1%84%87%E1%85%A1%E1%84%85%E1%85%B3%E1%86%AF%20%E1%84%92%E1%85%AA%E1%86%AF%E1%84%8B%E1%85%AD%E1%86%BC%E1%84%92%E1%85%A1%E1%86%AB%20%E1%84%8B%E1%85%B5%E1%86%AB%E1%84%80%E1%85%A9%E1%86%BC%E1%84%8C%E1%85%B5%E1%84%82%E1%85%B3%203e33b8211674448fb4070063bbfc3fa9/Untitled%206.png)
+
+json파일을 찾는 것이었는데 `톱니바퀴 → 프로젝트 설정 → 서비스 계정 → 새 비공개 키 생성`
+
+을 통해 얻을 수 있다. 예제 코드도 같이 적용되니 참 편리한 것 같다.
+
+```python
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+
+cred = credentials.Certificate('naver_auth.json')
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+a = 'hi'
+doc_ref = db.collection(u'users').document(a)
+doc_ref.set({
+    u'level': 20,
+    u'money': 700,
+    u'job': "knight"
+})
+```
+
+여러가지 테스트 해볼 때 사용했던 Firestore에 데이터를 추가할 때 사용했던 예제 코드이다.
+
+### 네이버 뉴스 정보를 Firebase에 저장하기
+
+```python
+@app.route('/NaverNewsResult', methods = ['GET'])                   
+
+def getNewsResult():                                               #전부 집대성한 API DB에 뉴스 저장
+    db = firestore.client()
+    today = time.strftime('%Y-%m-%d', time.localtime(time.time())) #YYYY-MM-DD
+
+    news_link = "http://0.0.0.0:80/NaverNewsLink"     #NAVER 뉴스 링크 가져오기
+    detail_link = "http://0.0.0.0:80/NaverNewsDetail" #NAVER 뉴스 본문 파싱하기
+    trend_link = "http://220.149.85.18:8088/trend"    #nodejs Google Trend 코드
+    trend_res = requests.get(trend_link)
+    items = json.loads(trend_res.json())["items"]
+    titles = []
+    resultData = []
+    for item in items:
+        title = item["title"]
+        titles.append(title)
+        headers = {'Content-Type': 'application/json; charset=utf-8'} #header를 추가하지 않으면 json파일을 API 쪽에서 파싱이 불가능 했다.
+        data = {"keyword": title}
+        link_res = requests.post(news_link, data=json.dumps(data),headers=headers) #json.dumps를 활용해서 딕셔너리를 json 형식으로 변환해야한다.
+        if link_res.status_code == 200:
+            links = link_res.json()['link']                 #네이버 뉴스 링크 모음
+            for link in links:
+                headers = {'Content-Type': 'application/json; charset=utf-8'} #header를 추가하지 않으면 json파일을 API 쪽에서 파싱이 불가능 했다.
+                data = {"link": link}
+                detail_res = requests.post(detail_link, data=json.dumps(data),headers=headers)
+                if detail_res.status_code == 200:
+                    detail = detail_res.json()['detail']
+                    doc_ref = db.collection(today).document(title)
+                    doc_ref.set({
+                        u'keyword': title,
+                        u'link': link,
+                        u'detail': detail
+                    })
+                    print('success')
+    return 'success'
+```
+
+위에서 개발했던 
+
+- node.js을 통한 구글 트렌드 API
+- Flask를 통한 네이버 뉴스 링크 API
+- Flask를 통한 네이버 뉴스 본문 내용 API
+
+3가지 API를 전부 활용하여 얻을 내용을 Firebase에 저장하는 API이다.
+
+코드의 흐름을 보면 순서대로 API들을 호출 하는 것을 알 수 있고
+
+![Untitled](%E1%84%82%E1%85%A6%E1%84%8B%E1%85%B5%E1%84%87%E1%85%A5%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A1%E1%84%8B%E1%85%AE%E1%84%83%E1%85%B3%E1%84%8B%E1%85%AA%20%E1%84%8F%E1%85%B3%E1%86%AF%E1%84%85%E1%85%A9%E1%84%87%E1%85%A1%E1%84%85%E1%85%B3%E1%86%AF%20%E1%84%92%E1%85%AA%E1%86%AF%E1%84%8B%E1%85%AD%E1%86%BC%E1%84%92%E1%85%A1%E1%86%AB%20%E1%84%8B%E1%85%B5%E1%86%AB%E1%84%80%E1%85%A9%E1%86%BC%E1%84%8C%E1%85%B5%E1%84%82%E1%85%B3%203e33b8211674448fb4070063bbfc3fa9/Untitled%207.png)
+
+DB는 오늘날짜 → 키워드 → 뉴스 내용 의 Structure로 저장하였다.
+
+### 전체 코드
+
+```python
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+from flask import Flask, request, Response
+from bs4 import BeautifulSoup
+import urllib.request
+import requests
+import json
+import time
+
+cred = credentials.Certificate('naver_auth.json')
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+app = Flask(__name__)
+
+@app.route('/NaverNewsLink', methods = ['POST'])
+
+def getNews():
+    params = request.get_json()["keyword"]      #post로 전달받은 데이터를 json으로 파싱 {"keyword": "코로나"}으로 보냄
+    
+    client_id = "YOUR-ID"
+    client_secret = "YOUR-SECRET"
+
+    encText = urllib.parse.quote(params) # 검색할 키워드
+
+    url = "https://openapi.naver.com/v1/search/news?query=" + encText + "&display=3&sort=sim"# json 결과가 필요할 때 사용
+
+    requestURL = urllib.request.Request(url)
+    requestURL.add_header("X-Naver-Client-Id", client_id)
+    requestURL.add_header("X-Naver-Client-Secret", client_secret)
+    response = urllib.request.urlopen(requestURL)
+    rescode = response.getcode()
+    if(rescode == 200):
+        news_links = []
+        response_body = response.read().decode('utf-8')     #type이 string이다
+        #return response_body
+        items = json.loads(response_body)["items"]          #json으로 불러와 item을 불러온다
+        for item in items:
+            link = item['link']
+            if 'news.naver.com' in link:
+                print(link)
+                news_links.append(link)
+        return {"link":news_links}
+    else:
+        return("Error Code:" + rescode)
+
+@app.route('/NaverNewsDetail', methods = ['POST'])
+
+def getNewsDetail():
+    params = request.get_json()["link"]      #post로 전달받은 데이터를 json으로 파싱 {"keyword": "코로나"}으로 보냄
+    headers = {'User-Agent':'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36'}
+    res = requests.get(params,headers=headers)
+    if res.status_code == 200:
+        news_data = []
+        try:
+            if 'sports' in params:                                                                                #스포츠 기사인 경우
+                soup = BeautifulSoup(res.text,"html.parser")
+                title = soup.select_one('h4.title').text.strip()
+                input_date = soup.select_one('div.info').text.strip().replace('\n',' ')
+                article = soup.select_one('div#newsEndContents').text.strip().replace('\n','')
+                # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+                article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+                data = {"title":title, "input_date":input_date, "article":article}
+            else:                                                                                                 #일반 기사인 경우
+                soup = BeautifulSoup(res.text,"html.parser")
+                title = soup.select_one('h3#articleTitle').text.strip()
+                input_date = soup.select_one('span.t11').text.strip()
+                article = soup.select_one('div#articleBodyContents').text.strip()
+                # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+                article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+                data = {"title":title, "input_date":input_date, "article":article}
+            news_data.append(data)
+        except:                                                                                                   #연예 기사인 경우
+            soup = BeautifulSoup(res.text,"html.parser")
+            title = soup.select_one('h2.end_tit').text.strip()
+            input_date = soup.select_one('span.author').text.strip().replace('\n',' ')
+            article = soup.select_one('div#articeBody').text.strip().replace('\n','')
+            # 간혹 flash오류가 발생하므로 이를 우회하기 위한 함수를 추가한다.
+            article = article.replace('// flash 오류를 우회하기 위한 함수 추가\nfunction _flash_removeCallback() {}','')
+            data = {"title":title, "input_date":input_date, "article":article}
+            news_data.append(data)
+    else:
+        return("Error Code:" + res.status_code)
+    return {"detail" : news_data}
+
+@app.route('/NaverNewsResult', methods = ['GET'])                   
+
+def getNewsResult():                                               #전부 집대성한 API DB에 뉴스 저장
+    db = firestore.client()
+    today = time.strftime('%Y-%m-%d', time.localtime(time.time())) #YYYY-MM-DD
+
+    news_link = "http://0.0.0.0:80/NaverNewsLink"     #NAVER 뉴스 링크 가져오기
+    detail_link = "http://0.0.0.0:80/NaverNewsDetail" #NAVER 뉴스 본문 파싱하기
+    trend_link = "http://220.149.85.18:8088/trend"    #nodejs Google Trend 코드
+    trend_res = requests.get(trend_link)
+    items = json.loads(trend_res.json())["items"]
+    titles = []
+    resultData = []
+    for item in items:
+        title = item["title"]
+        titles.append(title)
+        headers = {'Content-Type': 'application/json; charset=utf-8'} #header를 추가하지 않으면 json파일을 API 쪽에서 파싱이 불가능 했다.
+        data = {"keyword": title}
+        link_res = requests.post(news_link, data=json.dumps(data),headers=headers) #json.dumps를 활용해서 딕셔너리를 json 형식으로 변환해야한다.
+        if link_res.status_code == 200:
+            links = link_res.json()['link']                 #네이버 뉴스 링크 모음
+            for link in links:
+                headers = {'Content-Type': 'application/json; charset=utf-8'} #header를 추가하지 않으면 json파일을 API 쪽에서 파싱이 불가능 했다.
+                data = {"link": link}
+                detail_res = requests.post(detail_link, data=json.dumps(data),headers=headers)
+                if detail_res.status_code == 200:
+                    detail = detail_res.json()['detail']
+                    #print(detail)
+                    # #{"keyword":item,"link":link,"detail":detail}
+                    # #resultData.append({"keyword":item,"link":link,"detail":detail})     #양이 너무 많아서 출력 조차 안된다 DB 연동이 시급하다
+                    doc_ref = db.collection(today).document(title)
+                    doc_ref.set({
+                        u'keyword': title,
+                        u'link': link,
+                        u'detail': detail
+                    })
+                    print('success')
+    return 'success'
+
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0', port=80)
+```
+
+본인의 네이버 개발자 정보, 본인의 API 주소를 입력하는 것을 잊지말자
